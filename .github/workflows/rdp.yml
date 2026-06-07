@@ -1,113 +1,560 @@
-name: RDP
+<!DOCTYPE html>
+<html lang="ar">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>اختبار الشخصية - اكتشف شخصيتك الأنمي المناسبة</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
 
-on:
-  workflow_dispatch:
+        body {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            font-family: 'Tajawal', 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            padding: 20px;
+            direction: rtl;
+        }
 
-jobs:
-  secure-rdp:
-    runs-on: windows-latest
-    timeout-minutes: 3600
+        .container {
+            max-width: 900px;
+            margin: 0 auto;
+            background: white;
+            border-radius: 25px;
+            box-shadow: 0 20px 60px rgba(0,0,0,0.3);
+            overflow: hidden;
+        }
 
-    steps:
-      - name: Configure Core RDP Settings
-        run: |
-          # Enable Remote Desktop and disable Network Level Authentication (if needed)
-          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' `
-                             -Name "fDenyTSConnections" -Value 0 -Force
-          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' `
-                             -Name "UserAuthentication" -Value 0 -Force
-          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' `
-                             -Name "SecurityLayer" -Value 0 -Force
+        .header {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            padding: 30px;
+            text-align: center;
+        }
 
-          # Remove any existing rule with the same name to avoid duplication
-          netsh advfirewall firewall delete rule name="RDP-Tailscale"
-          
-          # For testing, allow any incoming connection on port 3389
-          netsh advfirewall firewall add rule name="RDP-Tailscale" `
-            dir=in action=allow protocol=TCP localport=3389
+        .header h1 {
+            font-size: 28px;
+            margin-bottom: 10px;
+        }
 
-          # (Optional) Restart the Remote Desktop service to ensure changes take effect
-          Restart-Service -Name TermService -Force
+        .header p {
+            font-size: 16px;
+            opacity: 0.9;
+        }
 
-      - name: Create RDP User with Secure Password
-        run: |
-          Add-Type -AssemblyName System.Security
-          $charSet = @{
-              Upper   = [char[]](65..90)      # A-Z
-              Lower   = [char[]](97..122)     # a-z
-              Number  = [char[]](48..57)      # 0-9
-              Special = ([char[]](33..47) + [char[]](58..64) +
-                         [char[]](91..96) + [char[]](123..126)) # Special characters
-          }
-          $rawPassword = @()
-          $rawPassword += $charSet.Upper | Get-Random -Count 4
-          $rawPassword += $charSet.Lower | Get-Random -Count 4
-          $rawPassword += $charSet.Number | Get-Random -Count 4
-          $rawPassword += $charSet.Special | Get-Random -Count 4
-          $password = -join ($rawPassword | Sort-Object { Get-Random })
-          $securePass = ConvertTo-SecureString $password -AsPlainText -Force
-          New-LocalUser -Name "RDP" -Password $securePass -AccountNeverExpires
-          Add-LocalGroupMember -Group "Administrators" -Member "RDP"
-          Add-LocalGroupMember -Group "Remote Desktop Users" -Member "RDP"
-          
-          echo "RDP_CREDS=User: RDP | Password: $password" >> $env:GITHUB_ENV
-          
-          if (-not (Get-LocalUser -Name "RDP")) {
-              Write-Error "User creation failed"
-              exit 1
-          }
+        .progress-bar {
+            background: #e0e0e0;
+            height: 8px;
+            width: 100%;
+        }
 
-      - name: Install Tailscale
-        run: |
-          $tsUrl = "https://pkgs.tailscale.com/stable/tailscale-setup-1.82.0-amd64.msi"
-          $installerPath = "$env:TEMP\tailscale.msi"
-          
-          Invoke-WebRequest -Uri $tsUrl -OutFile $installerPath
-          Start-Process msiexec.exe -ArgumentList "/i", "`"$installerPath`"", "/quiet", "/norestart" -Wait
-          Remove-Item $installerPath -Force
+        .progress-fill {
+            background: linear-gradient(90deg, #667eea, #764ba2);
+            height: 100%;
+            width: 0%;
+            transition: width 0.3s ease;
+        }
 
-      - name: Establish Tailscale Connection
-        run: |
-          # Bring up Tailscale with the provided auth key and set a unique hostname
-          & "$env:ProgramFiles\Tailscale\tailscale.exe" up --authkey=${{ secrets.TAILSCALE_AUTH_KEY }} --hostname=gh-runner-$env:GITHUB_RUN_ID
-          
-          # Wait for Tailscale to assign an IP
-          $tsIP = $null
-          $retries = 0
-          while (-not $tsIP -and $retries -lt 10) {
-              $tsIP = & "$env:ProgramFiles\Tailscale\tailscale.exe" ip -4
-              Start-Sleep -Seconds 5
-              $retries++
-          }
-          
-          if (-not $tsIP) {
-              Write-Error "Tailscale IP not assigned. Exiting."
-              exit 1
-          }
-          echo "TAILSCALE_IP=$tsIP" >> $env:GITHUB_ENV
-      
-      - name: Verify RDP Accessibility
-        run: |
-          Write-Host "Tailscale IP: $env:TAILSCALE_IP"
-          
-          # Test connectivity using Test-NetConnection against the Tailscale IP on port 3389
-          $testResult = Test-NetConnection -ComputerName $env:TAILSCALE_IP -Port 3389
-          if (-not $testResult.TcpTestSucceeded) {
-              Write-Error "TCP connection to RDP port 3389 failed"
-              exit 1
-          }
-          Write-Host "TCP connectivity successful!"
+        .questions-area {
+            padding: 30px;
+            min-height: 500px;
+        }
 
-      - name: Maintain Connection
-        run: |
-          Write-Host "`n=== RDP ACCESS ==="
-          Write-Host "Address: $env:TAILSCALE_IP"
-          Write-Host "Username: RDP"
-          Write-Host "Password: $(echo $env:RDP_CREDS)"
-          Write-Host "==================`n"
-          
-          # Keep runner active indefinitely (or until manually cancelled)
-          while ($true) {
-              Write-Host "[$(Get-Date)] RDP Active - Use Ctrl+C in workflow to terminate"
-              Start-Sleep -Seconds 300
-          }
+        .question-card {
+            display: none;
+        }
+
+        .question-card.active {
+            display: block;
+        }
+
+        .question-text {
+            font-size: 22px;
+            color: #333;
+            margin-bottom: 30px;
+            line-height: 1.4;
+            font-weight: 500;
+        }
+
+        .options {
+            display: flex;
+            flex-direction: column;
+            gap: 12px;
+        }
+
+        .option {
+            display: flex;
+            align-items: center;
+            padding: 15px 20px;
+            background: #f5f5f5;
+            border-radius: 12px;
+            cursor: pointer;
+            transition: all 0.3s ease;
+            border: 2px solid transparent;
+        }
+
+        .option:hover {
+            background: #e8e8e8;
+            transform: translateX(-5px);
+        }
+
+        .option.selected {
+            background: linear-gradient(135deg, #667eea20 0%, #764ba220 100%);
+            border-color: #764ba2;
+        }
+
+        .option input {
+            margin-left: 15px;
+            width: 20px;
+            height: 20px;
+            cursor: pointer;
+        }
+
+        .option label {
+            flex: 1;
+            cursor: pointer;
+            font-size: 16px;
+            color: #333;
+        }
+
+        .navigation {
+            display: flex;
+            justify-content: space-between;
+            margin-top: 30px;
+            gap: 15px;
+        }
+
+        .nav-btn {
+            padding: 12px 30px;
+            border: none;
+            border-radius: 25px;
+            font-size: 16px;
+            cursor: pointer;
+            transition: all 0.3s ease;
+            font-weight: bold;
+        }
+
+        .prev-btn {
+            background: #e0e0e0;
+            color: #666;
+        }
+
+        .prev-btn:hover {
+            background: #d0d0d0;
+        }
+
+        .next-btn, .submit-btn {
+            background: linear-gradient(135deg, #667eea, #764ba2);
+            color: white;
+        }
+
+        .next-btn:hover, .submit-btn:hover {
+            transform: scale(1.02);
+            box-shadow: 0 5px 15px rgba(102,126,234,0.4);
+        }
+
+        .gender-section {
+            background: #f9f9f9;
+            padding: 25px;
+            border-radius: 15px;
+            margin-top: 20px;
+            text-align: center;
+        }
+
+        .gender-buttons {
+            display: flex;
+            justify-content: center;
+            gap: 20px;
+            margin-top: 15px;
+        }
+
+        .gender-btn {
+            padding: 12px 30px;
+            border: 2px solid #764ba2;
+            background: white;
+            border-radius: 25px;
+            cursor: pointer;
+            font-size: 16px;
+            transition: all 0.3s ease;
+        }
+
+        .gender-btn.selected {
+            background: linear-gradient(135deg, #667eea, #764ba2);
+            color: white;
+        }
+
+        .result-area {
+            padding: 30px;
+            display: none;
+        }
+
+        .result-card {
+            text-align: center;
+        }
+
+        .personality-badge {
+            background: linear-gradient(135deg, #667eea, #764ba2);
+            color: white;
+            padding: 20px;
+            border-radius: 15px;
+            margin-bottom: 20px;
+        }
+
+        .personality-code {
+            font-size: 36px;
+            font-weight: bold;
+        }
+
+        .personality-name {
+            font-size: 24px;
+            margin-top: 10px;
+        }
+
+        .anime-character {
+            margin-top: 20px;
+            padding: 20px;
+            background: #f5f5f5;
+            border-radius: 15px;
+        }
+
+        .character-image {
+            width: 150px;
+            height: 150px;
+            border-radius: 50%;
+            object-fit: cover;
+            margin: 15px auto;
+            display: block;
+            border: 4px solid #764ba2;
+        }
+
+        .character-name {
+            font-size: 28px;
+            color: #764ba2;
+            margin: 15px 0;
+        }
+
+        .character-desc {
+            color: #666;
+            line-height: 1.6;
+            text-align: justify;
+        }
+
+        .strengths, .weaknesses {
+            text-align: right;
+            margin-top: 20px;
+            padding: 15px;
+            border-radius: 12px;
+        }
+
+        .strengths {
+            background: #e8f5e9;
+            border-right: 4px solid #4caf50;
+        }
+
+        .weaknesses {
+            background: #ffebee;
+            border-right: 4px solid #f44336;
+        }
+
+        .strengths h4, .weaknesses h4 {
+            margin-bottom: 10px;
+        }
+
+        .strengths ul, .weaknesses ul {
+            padding-right: 20px;
+        }
+
+        .strengths li, .weaknesses li {
+            margin: 8px 0;
+        }
+
+        .loading {
+            display: none;
+            text-align: center;
+            padding: 50px;
+        }
+
+        .spinner {
+            width: 50px;
+            height: 50px;
+            border: 4px solid #e0e0e0;
+            border-top: 4px solid #764ba2;
+            border-radius: 50%;
+            animation: spin 1s linear infinite;
+            margin: 0 auto 20px;
+        }
+
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+
+        .error-message {
+            background: #ffebee;
+            color: #c62828;
+            padding: 15px;
+            border-radius: 10px;
+            margin: 20px;
+            text-align: center;
+        }
+
+        @media (max-width: 600px) {
+            .questions-area {
+                padding: 20px;
+            }
+            .question-text {
+                font-size: 18px;
+            }
+            .option label {
+                font-size: 14px;
+            }
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1>🎭 اكتشف شخصيتك الأنمي المناسبة</h1>
+            <p>أجب عن الأسئلة التالية بدقة لتحديد نمط شخصيتك ومن ثم الشخصية الأنمي التي تناسبك</p>
+        </div>
+        
+        <div class="progress-bar">
+            <div class="progress-fill" id="progressFill"></div>
+        </div>
+
+        <div class="questions-area" id="questionsArea">
+            <div id="questionsContainer"></div>
+            
+            <div class="gender-section" id="genderSection">
+                <h3>⚥ أخبرنا عن جنسك</h3>
+                <div class="gender-buttons">
+                    <button class="gender-btn" data-gender="Male">👨 ذكر</button>
+                    <button class="gender-btn" data-gender="Female">👩 أنثى</button>
+                    <button class="gender-btn" data-gender="Other">🌈 آخر</button>
+                </div>
+            </div>
+
+            <div class="navigation">
+                <button class="nav-btn prev-btn" id="prevBtn">السابق</button>
+                <button class="nav-btn next-btn" id="nextBtn">التالي</button>
+                <button class="nav-btn submit-btn" id="submitBtn" style="display: none;">تحليل شخصيتي</button>
+            </div>
+        </div>
+
+        <div class="loading" id="loading">
+            <div class="spinner"></div>
+            <p>جاري تحليل شخصيتك...</p>
+        </div>
+
+        <div class="result-area" id="resultArea"></div>
+    </div>
+
+    <script>
+        // ربط أنواع MBTI بشخصيات الأنمي
+        const personalityToAnime = {
+            'INTJ': {
+                character: 'Lelouch Lamperouge',
+                anime: 'Code Geass',
+                image: 'https://i.imgur.com/placeholder.jpg',
+                description: 'استراتيجي عبقري، يخطط خطواته بدقة قبل التنفيذ. لديك رؤية ثاقبة للمستقبل وتفضل العمل بمفردك لتحقيق أهدافك. أنت شخص طموح لا يتوقف عند حدود.',
+                strengths: ['تفكير استراتيجي', 'ثقة عالية بالنفس', 'قدرة على التخطيط طويل المدى', 'استقلالية'],
+                weaknesses: ['قد تبدو متعجرفاً', 'صعوبة في التعبير عن المشاعر', 'العزلة أحياناً']
+            },
+            'INTP': {
+                character: 'L',
+                anime: 'Death Note',
+                image: 'https://i.imgur.com/placeholder.jpg',
+                description: 'عبقري غريب الأطوار، تحب حل الألغاز والمشكلات المعقدة. أنت شخص فضولي بطبيعتك وتفضل التحليل العميق لكل شيء حولك.',
+                strengths: ['ذكاء حاد', 'إبداع في حل المشكلات', 'تفكير منطقي', 'فضول علمي'],
+                weaknesses: ['قد تهمل العلاقات الاجتماعية', 'تردد في اتخاذ القرارات', 'عدم تنظيم']
+            },
+            'ENTJ': {
+                character: 'Aizen Sousuke',
+                anime: 'Bleach',
+                image: 'https://i.imgur.com/placeholder.jpg',
+                description: 'قائد بالفطرة، تخطط وتنفذ ببراعة. أنت شخص طموح تسعى للقيادة والسيطرة، وتؤمن بأن الأهداف الكبيرة تتطلب خططاً كبيرة.',
+                strengths: ['قيادة قوية', 'ثقة عالية', 'قدرة على التنظيم', 'طموح لا حدود له'],
+                weaknesses: ['قد تكون متسلطاً', 'نفاد صبر مع البطيئين', 'تجاهل مشاعر الآخرين']
+            },
+            'ENTP': {
+                character: 'Gojo Satoru',
+                anime: 'Jujutsu Kaisen',
+                image: 'https://i.imgur.com/placeholder.jpg',
+                description: 'شخصية كاريزمية، ذكية، وتحب التحدي. لديك موهبة في النقاش والإقناع، وتستمتع باستكشاف الأفكار الجديدة.',
+                strengths: ['ذكاء حاد', 'كاريزما عالية', 'إبداع', 'قدرة على الارتجال'],
+                weaknesses: ['قد تبدو متغطرساً', 'صعوبة في الالتزام', 'عدم صبر']
+            },
+            'INFJ': {
+                character: 'Itachi Uchiha',
+                anime: 'Naruto',
+                image: 'https://i.imgur.com/placeholder.jpg',
+                description: 'شخصية عميقة، مثالية، وحساسة جداً لمشاعر الآخرين. لديك رؤية فريدة للحياة وتسعى دائماً لمساعدة الآخرين.',
+                strengths: ['تعاطف عالي', 'حدس قوي', 'مثالية', 'إخلاص'],
+                weaknesses: ['حساسية مفرطة', 'كمالية', 'انطوائية']
+            },
+            'INFP': {
+                character: 'Steven Universe',
+                anime: 'Steven Universe',
+                image: 'https://i.ibb.co/XkLwCGRX/images-3.png',
+                description: 'شخصية حالمة، مبدعة، ومليئة بالحب للآخرين. تؤمن بقوة اللطف والصداقة، وتسعى لصنع عالم أفضل.',
+                strengths: ['إبداع', 'تعاطف', 'مثالية', 'إخلاص للقيم'],
+                weaknesses: ['حساسية عالية', 'تجنب الصراع', 'صعوبة في اتخاذ القرارات']
+            },
+            'ENFJ': {
+                character: 'Monkey D. Luffy',
+                anime: 'One Piece',
+                image: 'https://i.imgur.com/placeholder.jpg',
+                description: 'قائد كاريزمي يلهم من حوله. لديك قدرة فطرية على فهم الناس وتحفيزهم لتحقيق أهدافهم.',
+                strengths: ['قدرة على الإلهام', 'تعاطف عالي', 'مهارات اجتماعية ممتازة', 'كاريزما'],
+                weaknesses: ['قد تهمل نفسك', 'مثالية مفرطة', 'حساسية للنقد']
+            },
+            'ENFP': {
+                character: 'Amethyst',
+                anime: 'Steven Universe',
+                image: 'https://i.ibb.co/VpzJLxt6/42-423110-steven-universe-amethyst-amethyst-from-steven-universe-costume.jpg',
+                description: 'شخصية مفعمة بالطاقة والحماس. تحب المرح والمغامرة، وتعيش اللحظة بأقصى درجاتها. أنت روح الحفلات ومصدر الإيجابية لمحيطك.',
+                strengths: ['حماس لا ينضب', 'إبداع', 'مرونة', 'قدرة على صنع المرح'],
+                weaknesses: ['عدم تنظيم', 'تشتت الانتباه', 'صعوبة في الالتزام طويل المدى']
+            },
+            'ISTJ': {
+                character: 'Levi Ackerman',
+                anime: 'Attack on Titan',
+                image: 'https://i.imgur.com/placeholder.jpg',
+                description: 'شخصية عملية، منظمة، وتضع المعايير العالية لنفسها وللآخرين. أنت تعتمد عليك في الأوقات الصعبة.',
+                strengths: ['موثوقية عالية', 'تنظيم ممتاز', 'صبر', 'دقة في العمل'],
+                weaknesses: ['قد تكون جامداً', 'صعوبة في التكيف مع التغيير', 'نقد لاذع']
+            },
+            'ISFJ': {
+                character: 'Tohru Honda',
+                anime: 'Fruits Basket',
+                image: 'https://i.imgur.com/placeholder.jpg',
+                description: 'شخصية دافئة، مخلصة، وتضع احتياجات الآخرين قبل احتياجاتها. أنت السند الحقيقي لمن حولك.',
+                strengths: ['إخلاص كبير', 'حس مسؤولية عالي', 'صبر', 'اهتمام بالتفاصيل'],
+                weaknesses: ['إهمال الذات', 'حساسية مفرطة', 'صعوبة في قول "لا"']
+            },
+            'ESTJ': {
+                character: 'Erwin Smith',
+                anime: 'Attack on Titan',
+                image: 'https://i.imgur.com/placeholder.jpg',
+                description: 'قائد عملي، حازم، ومؤمن بالنظام والقوانين. أنت من يتخذ القرارات الصعبة عندما يحتاجها الآخرون.',
+                strengths: ['قيادة قوية', 'تنظيم ممتاز', 'عملية', 'اتخاذ قرارات سريعة'],
+                weaknesses: ['قد تكون متسلطاً', 'عدم صبر مع الأخطاء', 'صلابة']
+            },
+            'ESFJ': {
+                character: 'Winry Rockbell',
+                anime: 'Fullmetal Alchemist',
+                image: 'https://i.imgur.com/placeholder.jpg',
+                description: 'شخصية اجتماعية، مهتمة بالآخرين، وتسعى دائماً لخلق الانسجام. أنت قلب أي فريق تعمل معه.',
+                strengths: ['مهارات اجتماعية ممتازة', 'كرم', 'تنظيم', 'ولاء'],
+                weaknesses: ['حاجة دائمة للتقدير', 'حساسية للنقد', 'قلق زائد عن الآخرين']
+            },
+            'ISTP': {
+                character: 'Toji Fushiguro',
+                anime: 'Jujutsu Kaisen',
+                image: 'https://i.ibb.co/8yCTCzW/Fl-RPBg-Ha-AAAFwr4.jpg',
+                description: 'شخصية مستقلة، عملية، وتفضل التعلم بالممارسة. أنت ماهر في حل المشكلات العملية وتتعامل مع الأزمات ببرود.',
+                strengths: ['هدوء في الأزمات', 'مهارات عملية عالية', 'استقلالية', 'قدرة على التركيز'],
+                weaknesses: ['انعزال اجتماعي', 'صعوبة في التعبير عن المشاعر', 'تمرد على القواعد']
+            },
+            'ISFP': {
+                character: 'Yuji Itadori',
+                anime: 'Jujutsu Kaisen',
+                image: 'https://i.imgur.com/placeholder.jpg',
+                description: 'شخصية فنية، حساسة، وتعيش اللحظة. لديك تقدير عميق للجمال وتسعى للانسجام مع محيطك.',
+                strengths: ['حس فني عالي', 'مرونة', 'تعاطف', 'صدق'],
+                weaknesses: ['حساسية مفرطة', 'تجنب الصراع', 'صعوبة في التخطيط']
+            },
+            'ESTP': {
+                character: 'Joseph Joestar',
+                anime: 'JoJo Bizarre Adventure',
+                image: 'https://i.imgur.com/placeholder.jpg',
+                description: 'شخصية جريئة، مليئة بالطاقة، وتحب المغامرة. أنت سريع البديهة وتتخذ القرارات بسرعة.',
+                strengths: ['شجاعة', 'ذكاء سريع', 'كاريزما', 'مهارات اجتماعية'],
+                weaknesses: ['اندفاعية', 'عدم صبر', 'تمرد على القواعد']
+            },
+            'ESFP': {
+                character: 'Naruto Uzumaki',
+                anime: 'Naruto',
+                image: 'https://i.imgur.com/placeholder.jpg',
+                description: 'شخصية مفعمة بالحيوية، تحب أن تكون مركز الاهتمام. أنت تعيش اللحظة وتستمتع بكل تفاصيلها.',
+                strengths: ['حماس', 'جاذبية', 'مرونة', 'قدرة على كسب الناس'],
+                weaknesses: ['تشتت', 'عدم تنظيم', 'حساسية للنقد']
+            }
+        };
+
+        let questions = [];
+        let currentQuestionIndex = 0;
+        let userAnswers = [];
+        let selectedGender = null;
+
+        // جلب الأسئلة من API
+        async function fetchQuestions() {
+            try {
+                const response = await fetch('https://16personalities-api.com/api/personality/questions');
+                if (!response.ok) throw new Error('فشل في جلب الأسئلة');
+                const data = await response.json();
+                questions = data;
+                userAnswers = new Array(questions.length).fill(null);
+                renderQuestions();
+                updateProgress();
+            } catch (error) {
+                console.error('Error fetching questions:', error);
+                document.getElementById('questionsContainer').innerHTML = `
+                    <div class="error-message">
+                        ⚠️ عذراً، حدث خطأ في تحميل الأسئلة. يرجى تحديث الصفحة والمحاولة مرة أخرى.
+                    </div>
+                `;
+            }
+        }
+
+        // عرض الأسئلة
+        function renderQuestions() {
+            const container = document.getElementById('questionsContainer');
+            container.innerHTML = '';
+            
+            questions.forEach((q, idx) => {
+                const card = document.createElement('div');
+                card.className = 'question-card';
+                if (idx === 0) card.classList.add('active');
+                card.dataset.index = idx;
+                
+                // ترجمة قيم الإجابات
+                const answerOptions = [
+                    { value: -3, label: 'لا أوافق بشدة' },
+                    { value: -2, label: 'لا أوافق إلى حد ما' },
+                    { value: -1, label: 'لا أوافق قليلاً' },
+                    { value: 0, label: 'محايد' },
+                    { value: 1, label: 'أوافق قليلاً' },
+                    { value: 2, label: 'أوافق إلى حد ما' },
+                    { value: 3, label: 'أوافق بشدة' }
+                ];
+                
+                card.innerHTML = `
+                    <div class="question-text">${q.text}</div>
+                    <div class="options">
+                        ${answerOptions.map(opt => `
+                            <div class="option ${userAnswers[idx] === opt.value ? 'selected' : ''}" data-value="${opt.value}">
+                                <input type="radio" name="q${idx}" value="${opt.value}" id="q${idx}_${opt.value}" ${userAnswers[idx] === opt.value ? 'checked' : ''}>
+                                <label for="q${idx}_${opt.value}">${opt.label}</label>
+                            </div>
+                        `).join('')}
+                    </div>
+                `;
+                
+                container.appendChild(card);
+            });
+            
+            attachOptionListeners();
+        }
+        
+        function attachOptionListeners() {
+            document.querySelectorAll('.option').forEach(opt => {
+                opt.addEventListener('click', (e) => {
+                    const radio = opt.querySelector('input');
+                    if (radio) {
+                        radio.checked = true;
+                        const value = parseInt(opt.dataset.value);
+                        const card = opt.closest('.question-card');
+ 
